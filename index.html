@@ -189,15 +189,20 @@
                 <h3 style={{fontWeight:'600', color:'white', marginBottom:'12px'}}>🏢 기관 정보</h3>
                 {isK ? (
                   <>
-                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'8px'}}><span style={{color:'#94a3b8'}}>회사</span><span style={{color:'#facc15', fontWeight:'500'}}>{KEPCO_COMPANIES[item.companyId] || item.companyId}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'8px'}}><span style={{color:'#94a3b8'}}>회사</span><span style={{color:'#facc15', fontWeight:'500'}}>{KEPCO_COMPANIES[item.company] || item.company}</span></div>
                     <div style={{display:'flex', justifyContent:'space-between'}}>
                       <span style={{color:'#94a3b8'}}>발주기관</span>
                       <span 
                         className="org-link"
                         style={{color:'#facc15', fontWeight:'500'}}
-                        onClick={(e) => { e.stopPropagation(); onOrgClick('한국전력공사', e); onClose(); }}
+                        onClick={(e) => { 
+                          e.stopPropagation(); 
+                          const orgName = KEPCO_COMPANIES[item.company] || item.company || '한국전력공사';
+                          onOrgClick(orgName, e, true); 
+                          onClose(); 
+                        }}
                       >
-                        📊 {item.placeName || '한국전력공사'}
+                        📊 {KEPCO_COMPANIES[item.company] || item.placeName || '한국전력공사'}
                       </span>
                     </div>
                   </>
@@ -237,28 +242,45 @@
     const OrgHistoryModal = ({ orgName, orgHistory, orgLoading, onClose, showToast }) => {
       if (!orgName) return null;
       
-      const avgRate = orgHistory.length > 0 
+      // KEPCO 데이터인지 확인
+      const isKepcoData = orgHistory.length > 0 && orgHistory[0].isKepco;
+      
+      const avgRate = orgHistory.length > 0 && !isKepcoData
         ? (orgHistory.reduce((sum, h) => sum + (parseFloat(h.sucsfbidRate) || 0), 0) / orgHistory.length).toFixed(2)
         : 0;
       
       const downloadCSV = () => {
-        const headers = ['공고명', '공고번호', '개찰일', '기초금액', '예정가격', '낙찰금액', '낙찰률', '낙찰자'];
-        const rows = orgHistory.map(h => {
-          const bssamt = parseFloat(h.bssamt) || parseFloat(h.plnprc) || parseFloat(h.presmptPrc) || '';
-          const sucsfAmt = parseFloat(h.sucsfbidAmt) || 0;
-          const sucsfRate = parseFloat(h.sucsfbidRate) || 0;
-          const estPrice = sucsfRate > 0 ? Math.round(sucsfAmt / (sucsfRate / 100)) : '';
-          return [
-            h.bidNtceNm?.replace(/,/g, ' ') || '',
-            h.bidNtceNo || '',
-            h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10) || '',
-            bssamt,
-            estPrice,
-            h.sucsfbidAmt || '',
-            h.sucsfbidRate || '',
-            (h.bidwinnrNm || h.sucsfbidCorpNm || '')?.replace(/,/g, ' ')
-          ];
-        });
+        let headers, rows;
+        
+        if (isKepcoData) {
+          headers = ['공고명', '공고번호', '공고일', '마감일', '추정가격', '발주처'];
+          rows = orgHistory.map(h => [
+            h.name?.replace(/,/g, ' ') || '',
+            h.no || '',
+            formatKepcoDate(h.noticeDate) || '',
+            formatKepcoDate(h.endDatetime?.slice(0, 8)) || '',
+            h.expectPrice || '',
+            KEPCO_COMPANIES[h.company] || h.company || ''
+          ]);
+        } else {
+          headers = ['공고명', '공고번호', '개찰일', '기초금액', '예정가격', '낙찰금액', '낙찰률', '낙찰자'];
+          rows = orgHistory.map(h => {
+            const bssamt = parseFloat(h.bssamt) || parseFloat(h.plnprc) || parseFloat(h.presmptPrc) || '';
+            const sucsfAmt = parseFloat(h.sucsfbidAmt) || 0;
+            const sucsfRate = parseFloat(h.sucsfbidRate) || 0;
+            const estPrice = sucsfRate > 0 ? Math.round(sucsfAmt / (sucsfRate / 100)) : '';
+            return [
+              h.bidNtceNm?.replace(/,/g, ' ') || '',
+              h.bidNtceNo || '',
+              h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10) || '',
+              bssamt,
+              estPrice,
+              h.sucsfbidAmt || '',
+              h.sucsfbidRate || '',
+              (h.bidwinnrNm || h.sucsfbidCorpNm || '')?.replace(/,/g, ' ')
+            ];
+          });
+        }
         const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
         const BOM = '\uFEFF';
         const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
@@ -292,23 +314,24 @@
               ) : orgHistory.length === 0 ? (
                 <div style={{textAlign:'center', padding:'48px 0'}}>
                   <div style={{fontSize:'32px', marginBottom:'8px'}}>📭</div>
-                  <p style={{color:'#94a3b8'}}>용역 분야 낙찰 이력이 없습니다.</p>
+                  <p style={{color:'#94a3b8'}}>{isKepcoData ? '입찰 공고 이력이 없습니다.' : '용역 분야 낙찰 이력이 없습니다.'}</p>
                 </div>
               ) : (
                 <>
                   {/* 요약 통계 */}
                   <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px', marginBottom:'24px'}}>
                     <div className="card" style={{textAlign:'center', padding:'20px'}}>
-                      <div style={{color:'#94a3b8', fontSize:'14px', marginBottom:'4px'}}>총 낙찰건수</div>
-                      <div style={{fontSize:'28px', fontWeight:'bold', color:'#22d3ee'}}>{orgHistory.length}건</div>
+                      <div style={{color:'#94a3b8', fontSize:'14px', marginBottom:'4px'}}>{isKepcoData ? '총 공고건수' : '총 낙찰건수'}</div>
+                      <div style={{fontSize:'28px', fontWeight:'bold', color: isKepcoData ? '#facc15' : '#22d3ee'}}>{orgHistory.length}건</div>
                     </div>
                     <div className="card" style={{textAlign:'center', padding:'20px'}}>
-                      <div style={{color:'#94a3b8', fontSize:'14px', marginBottom:'4px'}}>평균 낙찰률</div>
-                      <div style={{fontSize:'28px', fontWeight:'bold', color:'#34d399'}}>{avgRate}%</div>
+                      <div style={{color:'#94a3b8', fontSize:'14px', marginBottom:'4px'}}>{isKepcoData ? '조회기간' : '평균 낙찰률'}</div>
+                      <div style={{fontSize:'28px', fontWeight:'bold', color:'#34d399'}}>{isKepcoData ? '최근 85일' : avgRate + '%'}</div>
                     </div>
                   </div>
                   
-                  {/* 낙찰률 분포 차트 */}
+                  {/* 낙찰률 분포 차트 - G2B만 표시 */}
+                  {!isKepcoData && (
                   <div className="card" style={{padding:'16px', marginBottom:'24px'}}>
                     <div style={{color:'#94a3b8', fontSize:'14px', marginBottom:'12px'}}>📈 낙찰률 분포 (최근 12건)</div>
                     <div style={{display:'flex', alignItems:'flex-end', gap:'4px', height:'60px'}}>
@@ -335,6 +358,7 @@
                       <span>과거</span>
                     </div>
                   </div>
+                  )}
                   
                   {/* 테이블 헤더 */}
                   <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px'}}>
@@ -347,40 +371,74 @@
                   {/* 테이블 */}
                   <div className="card" style={{padding:0, overflow:'hidden'}}>
                     <div style={{maxHeight:'300px', overflowY:'auto'}}>
-                      <table style={{width:'100%', fontSize:'12px', borderCollapse:'collapse'}}>
-                        <thead style={{position:'sticky', top:0, background:'rgba(6, 182, 212, 0.2)'}}>
-                          <tr>
-                            <th style={{padding:'10px 8px', textAlign:'left', color:'#e2e8f0', fontWeight:'600'}}>공고명</th>
-                            <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>기초금액</th>
-                            <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>낙찰금액</th>
-                            <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>낙찰률</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {orgHistory.map((h, idx) => {
-                            const sucsfAmt = parseFloat(h.sucsfbidAmt) || 0;
-                            const sucsfRate = parseFloat(h.sucsfbidRate) || 0;
-                            const bssamt = parseFloat(h.bssamt) || parseFloat(h.plnprc) || parseFloat(h.presmptPrc) || 0;
-                            return (
+                      {isKepcoData ? (
+                        /* KEPCO 테이블 */
+                        <table style={{width:'100%', fontSize:'12px', borderCollapse:'collapse'}}>
+                          <thead style={{position:'sticky', top:0, background:'rgba(234, 179, 8, 0.2)'}}>
+                            <tr>
+                              <th style={{padding:'10px 8px', textAlign:'left', color:'#e2e8f0', fontWeight:'600'}}>공고명</th>
+                              <th style={{padding:'10px 8px', textAlign:'center', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>공고일</th>
+                              <th style={{padding:'10px 8px', textAlign:'center', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>마감일</th>
+                              <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>추정가격</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {orgHistory.map((h, idx) => (
                               <tr key={idx} style={{borderBottom:'1px solid #334155'}}>
                                 <td style={{padding:'10px 8px', color:'#e2e8f0'}}>
-                                  <div className="truncate" style={{maxWidth:'250px'}} title={h.bidNtceNm}>{h.bidNtceNm}</div>
-                                  <div style={{fontSize:'11px', color:'#64748b'}}>{h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10)}</div>
+                                  <div className="truncate" style={{maxWidth:'250px'}} title={h.name}>{h.name}</div>
+                                  <div style={{fontSize:'11px', color:'#64748b'}}>No.{h.no}</div>
                                 </td>
-                                <td style={{padding:'10px 8px', textAlign:'right', color:'#facc15', whiteSpace:'nowrap'}}>
-                                  {bssamt > 0 ? formatAmountShort(bssamt) : '-'}
+                                <td style={{padding:'10px 8px', textAlign:'center', color:'#94a3b8', whiteSpace:'nowrap'}}>
+                                  {formatKepcoDate(h.noticeDate)}
                                 </td>
-                                <td style={{padding:'10px 8px', textAlign:'right', color:'#34d399', fontWeight:'500', whiteSpace:'nowrap'}}>
-                                  {sucsfAmt > 0 ? formatAmountShort(sucsfAmt) : '-'}
+                                <td style={{padding:'10px 8px', textAlign:'center', color:'#fb923c', whiteSpace:'nowrap'}}>
+                                  {formatKepcoDate(h.endDatetime?.slice(0, 8))}
                                 </td>
-                                <td style={{padding:'10px 8px', textAlign:'right', whiteSpace:'nowrap', color: sucsfRate >= 90 ? '#34d399' : sucsfRate >= 85 ? '#22d3ee' : '#facc15'}}>
-                                  {sucsfRate > 0 ? sucsfRate + '%' : '-'}
+                                <td style={{padding:'10px 8px', textAlign:'right', color:'#facc15', fontWeight:'500', whiteSpace:'nowrap'}}>
+                                  {h.expectPrice ? formatAmountShort(h.expectPrice) : '-'}
                                 </td>
                               </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        /* G2B 테이블 */
+                        <table style={{width:'100%', fontSize:'12px', borderCollapse:'collapse'}}>
+                          <thead style={{position:'sticky', top:0, background:'rgba(6, 182, 212, 0.2)'}}>
+                            <tr>
+                              <th style={{padding:'10px 8px', textAlign:'left', color:'#e2e8f0', fontWeight:'600'}}>공고명</th>
+                              <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>기초금액</th>
+                              <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>낙찰금액</th>
+                              <th style={{padding:'10px 8px', textAlign:'right', color:'#e2e8f0', fontWeight:'600', whiteSpace:'nowrap'}}>낙찰률</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {orgHistory.map((h, idx) => {
+                              const sucsfAmt = parseFloat(h.sucsfbidAmt) || 0;
+                              const sucsfRate = parseFloat(h.sucsfbidRate) || 0;
+                              const bssamt = parseFloat(h.bssamt) || parseFloat(h.plnprc) || parseFloat(h.presmptPrc) || 0;
+                              return (
+                                <tr key={idx} style={{borderBottom:'1px solid #334155'}}>
+                                  <td style={{padding:'10px 8px', color:'#e2e8f0'}}>
+                                    <div className="truncate" style={{maxWidth:'250px'}} title={h.bidNtceNm}>{h.bidNtceNm}</div>
+                                    <div style={{fontSize:'11px', color:'#64748b'}}>{h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10)}</div>
+                                  </td>
+                                  <td style={{padding:'10px 8px', textAlign:'right', color:'#facc15', whiteSpace:'nowrap'}}>
+                                    {bssamt > 0 ? formatAmountShort(bssamt) : '-'}
+                                  </td>
+                                  <td style={{padding:'10px 8px', textAlign:'right', color:'#34d399', fontWeight:'500', whiteSpace:'nowrap'}}>
+                                    {sucsfAmt > 0 ? formatAmountShort(sucsfAmt) : '-'}
+                                  </td>
+                                  <td style={{padding:'10px 8px', textAlign:'right', whiteSpace:'nowrap', color: sucsfRate >= 90 ? '#34d399' : sucsfRate >= 85 ? '#22d3ee' : '#facc15'}}>
+                                    {sucsfRate > 0 ? sucsfRate + '%' : '-'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                   </div>
                 </>
@@ -477,95 +535,158 @@
         });
       };
 
+      // KEPCO 계열사 확인
+      const KEPCO_ORG_NAMES = ['한국전력공사', '한국서부발전', '한국남부발전', '한국중부발전', '한국남동발전', '한국동서발전', '한국전력기술', '한전KPS'];
+      const isKepcoOrg = (orgName) => KEPCO_ORG_NAMES.some(k => orgName?.includes(k));
+      
       // 발주기관 이력 조회
-      const loadOrgHistory = async (orgName, e) => {
+      const loadOrgHistory = async (orgName, e, isKepco = false) => {
         e?.stopPropagation();
         setSelectedOrg(orgName);
         setOrgHistory([]);
         setOrgLoading(true);
         
-        console.log(`=== ${orgName} 과거 입찰이력 조회 ===`);
+        // KEPCO 계열사 여부 확인
+        const useKepcoApi = isKepco || isKepcoOrg(orgName);
+        console.log(`=== ${orgName} 과거 입찰이력 조회 (${useKepcoApi ? 'KEPCO' : 'G2B'}) ===`);
         
         try {
-          const end = new Date();
-          const start = new Date(end.getTime() - 3 * 365 * 24 * 60 * 60 * 1000); // 3년
-          
-          let allHistory = [];
-          
-          // 30일씩 나눠서 조회 (3년치 = 약 36회)
-          for (let i = 0; i < 36; i++) {
-            const periodEnd = new Date(end.getTime() - i * 30 * 24 * 60 * 60 * 1000);
-            const periodStart = new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+          if (useKepcoApi) {
+            // KEPCO API로 조회 (최근 85일, API 제한 90일)
+            const end = new Date();
+            const start = new Date(end.getTime() - 85 * 24 * 60 * 60 * 1000);
             
-            if (periodStart < start) break;
+            const params = new URLSearchParams({
+              noticeBeginDate: ymd(start),
+              noticeEndDate: ymd(end),
+              name: '' // 전체 조회
+            });
             
-            // 각 기간별로 최대 5페이지(500건)까지 조회
-            for (let pg = 1; pg <= 5; pg++) {
-              const params = new URLSearchParams({
-                numOfRows: '100',
-                pageNo: String(pg),
-                inqryDiv: '1',
-                inqryBgnDt: ymd(periodStart) + '0000',
-                inqryEndDt: ymd(periodEnd) + '2359',
-              });
-              
+            const url = `${API.kepco}?${params}`;
+            console.log('[KEPCO 기관이력] 조회중...');
+            const text = await fetchApi(url);
+            
+            let allHistory = [];
+            if (text) {
               try {
-                const url = `${API.award}?${params}`;
-                if (pg === 1) console.log(`[기간 ${i+1}] 조회중...`);
-                const text = await fetchApi(url);
-                
-                if (!text) break;
-                
-                let data;
-                try { data = JSON.parse(text); } catch (e) { break; }
-                
-                if (data['nkoneps.com.response.ResponseError']) break;
-                
-                let items = [];
-                if (data.response?.body?.items) {
-                  if (Array.isArray(data.response.body.items)) {
-                    items = data.response.body.items;
-                  } else if (Array.isArray(data.response.body.items.item)) {
-                    items = data.response.body.items.item;
-                  } else if (data.response.body.items.item) {
-                    items = [data.response.body.items.item];
-                  }
+                const data = JSON.parse(text);
+                if (data.data && Array.isArray(data.data)) {
+                  // 해당 기관만 필터링
+                  const filtered = data.data.filter(item => {
+                    const companyName = KEPCO_COMPANIES[item.company] || '';
+                    return companyName.includes(orgName) || orgName.includes(companyName);
+                  });
+                  
+                  // KEPCO 데이터를 표시용으로 변환
+                  allHistory = filtered.map(item => ({
+                    ...item,
+                    isKepco: true,
+                    bidNtceNo: `KEPCO-${item.no}`,
+                    bidNtceNm: item.name,
+                    dminsttNm: KEPCO_COMPANIES[item.company] || item.company,
+                    fnlSucsfDate: item.noticeDate,
+                    presmptPrce: item.expectPrice,
+                    sucsfbidAmt: item.expectPrice,
+                  }));
+                  
+                  console.log(`[KEPCO] ${orgName} 관련 ${allHistory.length}건 발견`);
                 }
-                
-                if (items.length === 0) break; // 더 이상 데이터 없으면 다음 기간으로
-                
-                // 전체 용역 이력 중 해당 기관만 필터링
-                const filtered = items.filter(item => 
-                  item.dminsttNm?.includes(orgName) || 
-                  item.ntceInsttNm?.includes(orgName) ||
-                  item.rlDminsttNm?.includes(orgName)
-                );
-                
-                if (pg === 1 && filtered.length > 0) {
-                  console.log(`[기간 ${i+1}] ${orgName} 관련 ${filtered.length}건 발견`);
-                }
-                
-                allHistory = [...allHistory, ...filtered];
-                
-                // 100건 미만이면 다음 페이지 없음
-                if (items.length < 100) break;
-                
-              } catch (err) {
-                break;
+              } catch (parseErr) {
+                console.log('[KEPCO] JSON 파싱 실패:', parseErr);
               }
             }
+            
+            // 날짜순 정렬
+            allHistory.sort((a, b) => {
+              const dateA = a.noticeDate || '';
+              const dateB = b.noticeDate || '';
+              return dateB.localeCompare(dateA);
+            });
+            
+            setOrgHistory(allHistory);
+            
+          } else {
+            // 기존 나라장터 낙찰정보 API 로직
+            const end = new Date();
+            const start = new Date(end.getTime() - 3 * 365 * 24 * 60 * 60 * 1000); // 3년
+            
+            let allHistory = [];
+            
+            // 30일씩 나눠서 조회 (3년치 = 약 36회)
+            for (let i = 0; i < 36; i++) {
+              const periodEnd = new Date(end.getTime() - i * 30 * 24 * 60 * 60 * 1000);
+              const periodStart = new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+              
+              if (periodStart < start) break;
+              
+              // 각 기간별로 최대 5페이지(500건)까지 조회
+              for (let pg = 1; pg <= 5; pg++) {
+                const params = new URLSearchParams({
+                  numOfRows: '100',
+                  pageNo: String(pg),
+                  inqryDiv: '1',
+                  inqryBgnDt: ymd(periodStart) + '0000',
+                  inqryEndDt: ymd(periodEnd) + '2359',
+                });
+                
+                try {
+                  const url = `${API.award}?${params}`;
+                  if (pg === 1) console.log(`[기간 ${i+1}] 조회중...`);
+                  const text = await fetchApi(url);
+                  
+                  if (!text) break;
+                  
+                  let data;
+                  try { data = JSON.parse(text); } catch (e) { break; }
+                  
+                  if (data['nkoneps.com.response.ResponseError']) break;
+                  
+                  let items = [];
+                  if (data.response?.body?.items) {
+                    if (Array.isArray(data.response.body.items)) {
+                      items = data.response.body.items;
+                    } else if (Array.isArray(data.response.body.items.item)) {
+                      items = data.response.body.items.item;
+                    } else if (data.response.body.items.item) {
+                      items = [data.response.body.items.item];
+                    }
+                  }
+                  
+                  if (items.length === 0) break; // 더 이상 데이터 없으면 다음 기간으로
+                  
+                  // 전체 용역 이력 중 해당 기관만 필터링
+                  const filtered = items.filter(item => 
+                    item.dminsttNm?.includes(orgName) || 
+                    item.ntceInsttNm?.includes(orgName) ||
+                    item.rlDminsttNm?.includes(orgName)
+                  );
+                  
+                  if (pg === 1 && filtered.length > 0) {
+                    console.log(`[기간 ${i+1}] ${orgName} 관련 ${filtered.length}건 발견`);
+                  }
+                  
+                  allHistory = [...allHistory, ...filtered];
+                  
+                  // 100건 미만이면 다음 페이지 없음
+                  if (items.length < 100) break;
+                  
+                } catch (err) {
+                  break;
+                }
+              }
+            }
+            
+            // 중복 제거 및 정렬
+            const unique = [...new Map(allHistory.map(item => [item.bidNtceNo, item])).values()];
+            unique.sort((a, b) => {
+              const dateA = a.rlOpengDt || a.fnlSucsfDate || '';
+              const dateB = b.rlOpengDt || b.fnlSucsfDate || '';
+              return dateB.localeCompare(dateA);
+            });
+            
+            console.log(`${orgName} 이력:`, unique.length, '건');
+            setOrgHistory(unique);
           }
-          
-          // 중복 제거 및 정렬
-          const unique = [...new Map(allHistory.map(item => [item.bidNtceNo, item])).values()];
-          unique.sort((a, b) => {
-            const dateA = a.rlOpengDt || a.fnlSucsfDate || '';
-            const dateB = b.rlOpengDt || b.fnlSucsfDate || '';
-            return dateB.localeCompare(dateA);
-          });
-          
-          console.log(`${orgName} 이력:`, unique.length, '건');
-          setOrgHistory(unique);
           
         } catch (err) {
           console.error('기관 이력 조회 실패:', err);
