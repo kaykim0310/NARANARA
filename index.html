@@ -123,6 +123,14 @@
       return null;
     };
 
+    // KEPCO 공고명에서 발전본부/발전소명 추출
+    const extractPlaceName = (name) => {
+      if (!name) return null;
+      // "XX발전본부", "XX발전소", "XX지사", "XX지점", "XX사업소" 등 패턴
+      const match = name.match(/([가-힣]+발전본부|[가-힣]+발전소|[가-힣]+지사|[가-힣]+지점|[가-힣]+사업소|[가-힣]+센터)/);
+      return match ? match[1] : null;
+    };
+
     // 서버 API 호출 (PHP 프록시 사용으로 CORS 문제 없음)
     const fetchApi = async (url) => {
       try {
@@ -189,20 +197,23 @@
                 <h3 style={{fontWeight:'600', color:'white', marginBottom:'12px'}}>🏢 기관 정보</h3>
                 {isK ? (
                   <>
-                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'8px'}}><span style={{color:'#94a3b8'}}>회사</span><span style={{color:'#facc15', fontWeight:'500'}}>{KEPCO_COMPANIES[item.company] || item.company}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'8px'}}>
+                      <span style={{color:'#94a3b8'}}>회사</span>
+                      <span style={{color:'#facc15', fontWeight:'500'}}>{KEPCO_COMPANIES[item.company] || item.company}</span>
+                    </div>
                     <div style={{display:'flex', justifyContent:'space-between'}}>
-                      <span style={{color:'#94a3b8'}}>발주기관</span>
+                      <span style={{color:'#94a3b8'}}>발주처</span>
                       <span 
                         className="org-link"
                         style={{color:'#facc15', fontWeight:'500'}}
                         onClick={(e) => { 
                           e.stopPropagation(); 
-                          const orgName = KEPCO_COMPANIES[item.company] || item.company || '한국전력공사';
-                          onOrgClick(orgName, e, true); 
+                          const placeName = extractPlaceName(item.name) || KEPCO_COMPANIES[item.company] || '한국전력공사';
+                          onOrgClick(placeName, e, true); 
                           onClose(); 
                         }}
                       >
-                        📊 {KEPCO_COMPANIES[item.company] || item.placeName || '한국전력공사'}
+                        📊 {extractPlaceName(item.name) || item.placeName || '전체'}
                       </span>
                     </div>
                   </>
@@ -535,9 +546,15 @@
         });
       };
 
-      // KEPCO 계열사 확인
+      // KEPCO 계열사 확인 (회사명 또는 발전본부명)
       const KEPCO_ORG_NAMES = ['한국전력공사', '한국서부발전', '한국남부발전', '한국중부발전', '한국남동발전', '한국동서발전', '한국전력기술', '한전KPS'];
-      const isKepcoOrg = (orgName) => KEPCO_ORG_NAMES.some(k => orgName?.includes(k));
+      const isKepcoOrg = (orgName) => {
+        // 회사명 매칭
+        if (KEPCO_ORG_NAMES.some(k => orgName?.includes(k))) return true;
+        // 발전본부/발전소 패턴 매칭
+        if (/발전본부|발전소/.test(orgName)) return true;
+        return false;
+      };
       
       // 발주기관 이력 조회
       const loadOrgHistory = async (orgName, e, isKepco = false) => {
@@ -563,7 +580,7 @@
             });
             
             const url = `${API.kepco}?${params}`;
-            console.log('[KEPCO 기관이력] 조회중...');
+            console.log(`[KEPCO 기관이력] ${orgName} 조회중...`);
             const text = await fetchApi(url);
             
             let allHistory = [];
@@ -571,10 +588,16 @@
               try {
                 const data = JSON.parse(text);
                 if (data.data && Array.isArray(data.data)) {
-                  // 해당 기관만 필터링
+                  // 해당 발전본부/기관 필터링 (공고명에서 발전본부명 포함 여부 확인)
                   const filtered = data.data.filter(item => {
+                    // 공고명에 발전본부명이 포함되어 있는지 확인
+                    if (item.name?.includes(orgName)) return true;
+                    // 또는 placeName이 일치하는지
+                    if (item.placeName?.includes(orgName)) return true;
+                    // 회사명 매칭 (한국남동발전 등)
                     const companyName = KEPCO_COMPANIES[item.company] || '';
-                    return companyName.includes(orgName) || orgName.includes(companyName);
+                    if (companyName === orgName || orgName === companyName) return true;
+                    return false;
                   });
                   
                   // KEPCO 데이터를 표시용으로 변환
@@ -583,7 +606,7 @@
                     isKepco: true,
                     bidNtceNo: `KEPCO-${item.no}`,
                     bidNtceNm: item.name,
-                    dminsttNm: KEPCO_COMPANIES[item.company] || item.company,
+                    dminsttNm: extractPlaceName(item.name) || KEPCO_COMPANIES[item.company] || item.company,
                     fnlSucsfDate: item.noticeDate,
                     presmptPrce: item.expectPrice,
                     sucsfbidAmt: item.expectPrice,
@@ -995,7 +1018,9 @@
                 ) : filtered.map(i => {
                   const isK = i.source === 'KEPCO';
                   const name = isK ? i.name : i.bidNtceNm;
-                  const org = isK ? (KEPCO_COMPANIES[i.companyId] || i.placeName || i.companyId) : i.ntceInsttNm;
+                  // KEPCO: 공고명에서 발전본부명 추출, 없으면 회사명
+                  const kepcoPlace = isK ? (extractPlaceName(i.name) || KEPCO_COMPANIES[i.company] || i.placeName) : null;
+                  const org = isK ? kepcoPlace : i.ntceInsttNm;
                   const amt = isK ? i.presumedPrice : i.presmptPrce;
                   const noticeD = isK ? formatKepcoDate(i.noticeDate) : i.bidNtceDate;
                   const dday = calcDday(isK ? i.endDatetime : i.bidClseDate);
@@ -1024,7 +1049,7 @@
                           <p 
                             className={'org-link'}
                             style={{fontSize:'14px', color: isK ? '#facc15' : '#cbd5e1'}}
-                            onClick={(e) => { e.stopPropagation(); loadOrgHistory(isK ? '한국전력공사' : org, e); }}
+                            onClick={(e) => { e.stopPropagation(); loadOrgHistory(org, e, isK); }}
                           >
                             🏢 {org} <span style={{color:'#22d3ee', fontSize:'12px'}}>📊</span>
                           </p>
