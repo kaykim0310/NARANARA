@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>나라장터 입찰 모니터 v4.6</title>
+  <title>나라장터 입찰 모니터 v4.7</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -40,6 +40,7 @@
     .toggle::after { content: ''; position: absolute; width: 20px; height: 20px; background: white; border-radius: 50%; top: 2px; left: 2px; transition: all 0.3s; }
     .toggle.active::after { left: 26px; }
     .info-box { background: rgba(34, 211, 238, 0.1); border: 1px solid #22d3ee; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .error-box { background: rgba(248, 113, 113, 0.1); border: 1px solid #f87171; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .org-link { cursor: pointer; transition: all 0.2s; }
     .org-link:hover { color: #22d3ee !important; text-decoration: underline; }
     .sidebar { background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 16px; }
@@ -58,9 +59,9 @@
 
     // API 설정 (Netlify Functions 사용)
     const API = {
-      g2b: '/api/g2b',      // Netlify Function
-      award: '/api/award',  // Netlify Function
-      kepco: '/api/kepco',  // Netlify Function
+      g2b: '/api/g2b',
+      award: '/api/award',
+      kepco: '/api/kepco',
     };
 
     const KEPCO_COMPANIES = {
@@ -112,7 +113,6 @@
       return Math.ceil((d - new Date()) / 86400000);
     };
 
-    // 키워드 매칭 함수 (선택된 키워드 Set을 인자로 받음)
     const matchKeyword = (text, selectedKeywords) => {
       if (!text) return null;
       for (const kw of KEYWORDS) {
@@ -123,22 +123,51 @@
       return null;
     };
 
-    // KEPCO 공고명에서 발전본부/발전소명 추출
     const extractPlaceName = (name) => {
       if (!name) return null;
-      // "XX발전본부", "XX발전소", "XX지사", "XX지점", "XX사업소" 등 패턴
       const match = name.match(/([가-힣]+발전본부|[가-힣]+발전소|[가-힣]+지사|[가-힣]+지점|[가-힣]+사업소|[가-힣]+센터)/);
       return match ? match[1] : null;
     };
 
-    // 서버 API 호출 (PHP 프록시 사용으로 CORS 문제 없음)
+    // ★ 수정: fetchApi에 에러 감지 및 상세 로깅 추가
     const fetchApi = async (url) => {
       try {
         const res = await fetch(url);
         if (res.ok) {
-          return await res.text();
+          const text = await res.text();
+          
+          // ★ API 에러 응답 감지 (XML 에러가 JSON 대신 올 때)
+          if (text.includes('SERVICE_KEY_IS_NOT_REGISTERED_ERROR')) {
+            console.error('❌ API 키 미등록 에러! data.go.kr에서 해당 서비스 활용신청 필요:', url.split('?')[0]);
+            return JSON.stringify({
+              _apiError: 'API_KEY_NOT_REGISTERED',
+              _message: 'API 키가 이 서비스에 등록되지 않았습니다. data.go.kr에서 활용신청 해주세요.',
+              response: { header: { resultCode: '99' }, body: { items: [], totalCount: 0 } }
+            });
+          }
+          if (text.includes('DAILY_TRAFFIC_LIMIT_EXCEEDED')) {
+            console.error('❌ 일일 API 트래픽 한도 초과!');
+            return JSON.stringify({
+              _apiError: 'TRAFFIC_LIMIT_EXCEEDED',
+              _message: '일일 API 트래픽 한도를 초과했습니다.',
+              response: { header: { resultCode: '99' }, body: { items: [], totalCount: 0 } }
+            });
+          }
+          if (text.includes('returnReasonCode') && text.includes('OpenAPI_ServiceResponse')) {
+            // XML 에러 응답을 파싱해서 에러 메시지 추출
+            const errMatch = text.match(/<returnAuthMsg>(.*?)<\/returnAuthMsg>/);
+            const errMsg = errMatch ? errMatch[1] : 'UNKNOWN_ERROR';
+            console.error('❌ API 에러:', errMsg, '\nURL:', url.split('?')[0]);
+            return JSON.stringify({
+              _apiError: errMsg,
+              _message: `API 에러: ${errMsg}`,
+              response: { header: { resultCode: '99' }, body: { items: [], totalCount: 0 } }
+            });
+          }
+          
+          return text;
         }
-        console.log('API 호출 실패:', res.status);
+        console.log('API 호출 실패:', res.status, res.statusText);
         return null;
       } catch (e) {
         console.log('API 호출 에러:', e);
@@ -146,7 +175,6 @@
       }
     };
 
-    // 하위호환을 위해 fetchWithCorsProxy도 유지
     const fetchWithCorsProxy = fetchApi;
 
     // 상세 모달
@@ -250,14 +278,11 @@
     };
 
     // 기관 이력 모달
-    const OrgHistoryModal = ({ orgName, orgHistory, orgLoading, onClose, showToast }) => {
+    const OrgHistoryModal = ({ orgName, orgHistory, orgLoading, orgError, onClose, showToast }) => {
       if (!orgName) return null;
       
-      // G2B와 KEPCO 데이터 분리
       const g2bData = orgHistory.filter(h => !h.isKepco);
       const kepcoData = orgHistory.filter(h => h.isKepco);
-      
-      // G2B 낙찰률 계산 (낙찰정보가 있는 것만)
       const g2bWithRate = g2bData.filter(h => parseFloat(h.sucsfbidRate) > 0);
       const avgRate = g2bWithRate.length > 0
         ? (g2bWithRate.reduce((sum, h) => sum + (parseFloat(h.sucsfbidRate) || 0), 0) / g2bWithRate.length).toFixed(2)
@@ -267,28 +292,10 @@
         const headers = ['출처', '공고명', '공고번호', '날짜', '기초금액/추정가격', '낙찰금액', '낙찰률', '낙찰자'];
         const rows = orgHistory.map(h => {
           if (h.isKepco) {
-            return [
-              'KEPCO',
-              h.name?.replace(/,/g, ' ') || h.bidNtceNm?.replace(/,/g, ' ') || '',
-              h.no || '',
-              formatKepcoDate(h.noticeDate) || '',
-              h.expectPrice || '',
-              '-',
-              '-',
-              '-'
-            ];
+            return ['KEPCO', h.name?.replace(/,/g, ' ') || h.bidNtceNm?.replace(/,/g, ' ') || '', h.no || '', formatKepcoDate(h.noticeDate) || '', h.expectPrice || '', '-', '-', '-'];
           } else {
             const bssamt = parseFloat(h.bssamt) || parseFloat(h.plnprc) || parseFloat(h.presmptPrc) || '';
-            return [
-              'G2B',
-              h.bidNtceNm?.replace(/,/g, ' ') || '',
-              h.bidNtceNo || '',
-              h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10) || '',
-              bssamt,
-              h.sucsfbidAmt || '',
-              h.sucsfbidRate || '',
-              (h.bidwinnrNm || h.sucsfbidCorpNm || '')?.replace(/,/g, ' ')
-            ];
+            return ['G2B', h.bidNtceNm?.replace(/,/g, ' ') || '', h.bidNtceNo || '', h.rlOpengDt?.slice(0, 10) || h.fnlSucsfDate?.slice(0, 10) || '', bssamt, h.sucsfbidAmt || '', h.sucsfbidRate || '', (h.bidwinnrNm || h.sucsfbidCorpNm || '')?.replace(/,/g, ' ')];
           }
         });
         const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
@@ -316,19 +323,28 @@
             </div>
             
             <div style={{padding:'24px'}}>
+              {/* ★ 추가: API 에러 메시지 표시 */}
+              {orgError && (
+                <div className="error-box" style={{marginBottom:'16px'}}>
+                  <p style={{color:'#f87171', fontWeight:'500', marginBottom:'4px'}}>⚠️ API 조회 오류</p>
+                  <p style={{color:'#94a3b8', fontSize:'13px'}}>{orgError}</p>
+                </div>
+              )}
+              
               {orgLoading ? (
                 <div style={{textAlign:'center', padding:'48px 0'}}>
                   <div style={{fontSize:'32px', marginBottom:'8px'}}>⏳</div>
                   <p style={{color:'#94a3b8'}}>입찰 이력 조회 중...</p>
+                  <p style={{color:'#64748b', fontSize:'12px', marginTop:'8px'}}>최대 2년간 데이터를 조회합니다</p>
                 </div>
               ) : orgHistory.length === 0 ? (
                 <div style={{textAlign:'center', padding:'48px 0'}}>
                   <div style={{fontSize:'32px', marginBottom:'8px'}}>📭</div>
                   <p style={{color:'#94a3b8'}}>입찰 이력이 없습니다.</p>
+                  {orgError && <p style={{color:'#64748b', fontSize:'12px', marginTop:'8px'}}>API 오류로 인해 조회되지 않았을 수 있습니다.</p>}
                 </div>
               ) : (
                 <>
-                  {/* 요약 통계 */}
                   <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'12px', marginBottom:'24px'}}>
                     <div className="card" style={{textAlign:'center', padding:'16px'}}>
                       <div style={{color:'#94a3b8', fontSize:'12px', marginBottom:'4px'}}>총 건수</div>
@@ -344,7 +360,6 @@
                     </div>
                   </div>
                   
-                  {/* 평균 낙찰률 (G2B 데이터가 있을 때만) */}
                   {g2bWithRate.length > 0 && (
                     <div className="card" style={{padding:'16px', marginBottom:'24px', background:'linear-gradient(135deg, rgba(6,182,212,0.1), rgba(59,130,246,0.1))'}}>
                       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
@@ -354,7 +369,6 @@
                     </div>
                   )}
                   
-                  {/* 테이블 헤더 */}
                   <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px'}}>
                     <span style={{color:'#94a3b8', fontSize:'14px'}}>📋 상세 이력 ({orgHistory.length}건)</span>
                     <button onClick={downloadCSV} className="btn btn-secondary" style={{padding:'6px 12px', fontSize:'12px'}}>
@@ -362,7 +376,6 @@
                     </button>
                   </div>
                   
-                  {/* 테이블 */}
                   <div className="card" style={{padding:0, overflow:'hidden'}}>
                     <div style={{maxHeight:'350px', overflowY:'auto'}}>
                       <table style={{width:'100%', fontSize:'12px', borderCollapse:'collapse'}}>
@@ -403,7 +416,7 @@
                                   <div style={{fontSize:'10px', color:'#64748b'}}>{sucsfAmt > 0 ? '낙찰' : '추정'}</div>
                                 </td>
                                 <td style={{padding:'10px 8px', textAlign:'right', whiteSpace:'nowrap', color: sucsfRate >= 90 ? '#34d399' : sucsfRate >= 85 ? '#22d3ee' : '#facc15'}}>
-                                  {sucsfRate > 0 ? sucsfRate + '%' : (isK ? '-' : '-')}
+                                  {sucsfRate > 0 ? sucsfRate + '%' : '-'}
                                 </td>
                               </tr>
                             );
@@ -465,7 +478,7 @@
     const App = () => {
       const [items, setItems] = useState([]);
       const [activeTab, setActiveTab] = useState('all');
-      const [keywords, setKeywords] = useState(new Set()); // 기본: 모두 해제
+      const [keywords, setKeywords] = useState(new Set());
       const [region, setRegion] = useState('');
       const [bsns, setBsns] = useState(new Set(['용역','물품','공사','외자']));
       const [loading, setLoading] = useState(false);
@@ -478,11 +491,12 @@
       const [g2bCnt, setG2bCnt] = useState(0);
       const [kepcoCnt, setKepcoCnt] = useState(0);
       const [kepcoError, setKepcoError] = useState(false);
+      const [apiErrors, setApiErrors] = useState([]);  // ★ 추가: API 에러 목록
       
-      // 기관 이력 관련 state
       const [selectedOrg, setSelectedOrg] = useState(null);
       const [orgHistory, setOrgHistory] = useState([]);
       const [orgLoading, setOrgLoading] = useState(false);
+      const [orgError, setOrgError] = useState(null);  // ★ 추가: 기관 이력 에러
       
       const [showTgModal, setShowTgModal] = useState(false);
       const [tgConfig, setTgConfig] = useState(() => {
@@ -506,43 +520,47 @@
         });
       };
 
-      // KEPCO 계열사 확인 (회사명 또는 발전본부명)
       const KEPCO_ORG_NAMES = ['한국전력공사', '한국서부발전', '한국남부발전', '한국중부발전', '한국남동발전', '한국동서발전', '한국전력기술', '한전KPS'];
       const isKepcoOrg = (orgName) => {
-        // 회사명 매칭
         if (KEPCO_ORG_NAMES.some(k => orgName?.includes(k))) return true;
-        // 발전본부/발전소 패턴 매칭
         if (/발전본부|발전소/.test(orgName)) return true;
         return false;
       };
       
-      // 발주기관 이력 조회 (나라장터 + KEPCO 둘 다 조회)
+      // ★ 대폭 수정: loadOrgHistory - API 호출 횟수 최적화 (180회 → 최대 24회)
       const loadOrgHistory = async (orgName, e, isKepco = false) => {
         e?.stopPropagation();
         setSelectedOrg(orgName);
         setOrgHistory([]);
         setOrgLoading(true);
+        setOrgError(null);
         
         const useKepcoApi = isKepco || isKepcoOrg(orgName);
         console.log(`=== ${orgName} 과거 입찰이력 조회 ===`);
-        console.log(`KEPCO 기관 여부: ${useKepcoApi}`);
         
         let allHistory = [];
+        let errorMsg = null;
         
         try {
-          // 1. 나라장터 낙찰정보 API 조회 (모든 기관에 대해)
+          // 1. 나라장터 낙찰정보 API 조회
+          // ★ 수정: 90일 단위로 조회 (30일→90일), 최대 2년 (8기간), 페이지당 최대 3페이지
           console.log('[나라장터] 낙찰정보 조회 시작...');
           const end = new Date();
-          const start = new Date(end.getTime() - 3 * 365 * 24 * 60 * 60 * 1000); // 3년
+          const start = new Date(end.getTime() - 2 * 365 * 24 * 60 * 60 * 1000); // 2년
           
-          // 30일씩 나눠서 조회
-          for (let i = 0; i < 36; i++) {
-            const periodEnd = new Date(end.getTime() - i * 30 * 24 * 60 * 60 * 1000);
-            const periodStart = new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+          const PERIOD_DAYS = 90;  // ★ 90일 단위
+          const MAX_PERIODS = 8;   // ★ 최대 8기간 (= 약 2년)
+          const MAX_PAGES = 3;     // ★ 기간당 최대 3페이지
+          
+          let apiCallCount = 0;
+          
+          for (let i = 0; i < MAX_PERIODS; i++) {
+            const periodEnd = new Date(end.getTime() - i * PERIOD_DAYS * 24 * 60 * 60 * 1000);
+            const periodStart = new Date(periodEnd.getTime() - PERIOD_DAYS * 24 * 60 * 60 * 1000);
             
             if (periodStart < start) break;
             
-            for (let pg = 1; pg <= 5; pg++) {
+            for (let pg = 1; pg <= MAX_PAGES; pg++) {
               const params = new URLSearchParams({
                 numOfRows: '100',
                 pageNo: String(pg),
@@ -552,15 +570,32 @@
               });
               
               try {
+                apiCallCount++;
                 const url = `${API.award}?${params}`;
                 const text = await fetchApi(url);
                 
-                if (!text) break;
+                if (!text) { 
+                  console.log(`[나라장터] 기간${i+1} 페이지${pg}: 응답없음`);
+                  break; 
+                }
                 
                 let data;
-                try { data = JSON.parse(text); } catch (e) { break; }
+                try { data = JSON.parse(text); } catch (e) { 
+                  console.log(`[나라장터] 기간${i+1} 페이지${pg}: JSON 파싱 실패`);
+                  break; 
+                }
                 
-                if (data['nkoneps.com.response.ResponseError']) break;
+                // ★ API 에러 감지
+                if (data._apiError) {
+                  console.error(`[나라장터] API 에러:`, data._apiError, data._message);
+                  errorMsg = data._message;
+                  break;
+                }
+                
+                if (data['nkoneps.com.response.ResponseError']) {
+                  console.log(`[나라장터] 기간${i+1}: ResponseError`);
+                  break;
+                }
                 
                 let items = [];
                 if (data.response?.body?.items) {
@@ -575,7 +610,6 @@
                 
                 if (items.length === 0) break;
                 
-                // 기관명 필터링 (공고명, 수요기관명 등에서 검색)
                 const filtered = items.filter(item => 
                   item.bidNtceNm?.includes(orgName) ||
                   item.dminsttNm?.includes(orgName) || 
@@ -585,7 +619,6 @@
                 
                 if (filtered.length > 0) {
                   console.log(`[나라장터 기간${i+1}] ${orgName} 관련 ${filtered.length}건 발견`);
-                  // G2B 데이터 표시
                   filtered.forEach(item => {
                     item.isKepco = false;
                     item.dataSource = 'G2B';
@@ -596,12 +629,19 @@
                 if (items.length < 100) break;
                 
               } catch (err) {
+                console.log(`[나라장터] 기간${i+1} 에러:`, err.message);
                 break;
               }
             }
+            
+            // API 에러면 더 이상 조회하지 않음
+            if (errorMsg) break;
+            
+            // ★ 호출 간 딜레이
+            await new Promise(r => setTimeout(r, 300));
           }
           
-          console.log(`[나라장터] 총 ${allHistory.length}건 발견`);
+          console.log(`[나라장터] 총 ${allHistory.length}건 (API 호출 ${apiCallCount}회)`);
           
           // 2. KEPCO 기관이면 KEPCO API도 추가 조회
           if (useKepcoApi) {
@@ -630,7 +670,6 @@
                     return false;
                   });
                   
-                  // KEPCO 데이터 변환
                   const kepcoItems = filtered.map(item => ({
                     ...item,
                     isKepco: true,
@@ -639,7 +678,6 @@
                     bidNtceNm: item.name,
                     dminsttNm: extractPlaceName(item.name) || KEPCO_COMPANIES[item.company],
                     rlOpengDt: item.noticeDate,
-                    // KEPCO는 낙찰정보가 없으므로 공고 정보만
                     sucsfbidAmt: null,
                     sucsfbidRate: null,
                   }));
@@ -663,10 +701,12 @@
           
           console.log(`=== 총 ${unique.length}건 (G2B: ${unique.filter(x=>!x.isKepco).length}, KEPCO: ${unique.filter(x=>x.isKepco).length}) ===`);
           setOrgHistory(unique);
+          if (errorMsg) setOrgError(errorMsg);
           
         } catch (err) {
           console.error('기관 이력 조회 실패:', err);
           setOrgHistory([]);
+          setOrgError('조회 중 오류가 발생했습니다: ' + err.message);
         }
         
         setOrgLoading(false);
@@ -675,25 +715,25 @@
       const loadData = async () => {
         setLoading(true);
         setKepcoError(false);
+        setApiErrors([]);
         
-        // 현재 선택된 키워드 (비어있으면 전체 키워드 사용)
         let currentKeywords = keywordsRef.current;
         if (currentKeywords.size === 0) {
           currentKeywords = new Set(KEYWORDS.map(k => k.id));
           console.log('키워드 비어있음 → 전체 키워드로 검색');
         }
         console.log('=== 데이터 로딩 시작 ===');
-        console.log('선택된 키워드:', [...currentKeywords]);
         
         const now = new Date();
         let all = [], g2b = 0, kep = 0;
+        let errors = [];
 
-        // G2B - 전체 데이터 가져와서 키워드 필터링
+        // G2B
         setLoadingMsg('🏛️ 나라장터 로딩...');
         try {
           const end = new Date(now), start = new Date(now.getTime() - 30*86400000);
           let pg = 1, tp = 1, g2bAll = [];
-          const MAX_PAGES = 50; // 최대 50페이지 = 5000건
+          const MAX_PAGES = 50;
           
           while (pg <= tp && pg <= MAX_PAGES) {
             setLoadingMsg(`🏛️ 나라장터 ${pg}/${Math.min(tp, MAX_PAGES)}페이지...`);
@@ -712,6 +752,13 @@
               let d;
               try { d = JSON.parse(text); } catch { break; }
               
+              // ★ API 에러 감지
+              if (d._apiError) {
+                console.error('[G2B] API 에러:', d._apiError, d._message);
+                errors.push({ source: 'G2B', error: d._apiError, message: d._message });
+                break;
+              }
+              
               if (d.response?.header?.resultCode === '00') {
                 tp = Math.ceil((d.response.body.totalCount||0)/100);
                 let it = d.response.body.items || [];
@@ -719,17 +766,21 @@
                 console.log(`[G2B] 페이지 ${pg}/${tp}: ${it.length}건`);
                 g2bAll = [...g2bAll, ...it];
                 pg++;
-              } else break;
+              } else {
+                console.log('[G2B] 응답 코드:', d.response?.header?.resultCode, d.response?.header?.resultMsg);
+                if (d.response?.header?.resultCode && d.response?.header?.resultCode !== '00') {
+                  errors.push({ source: 'G2B', error: d.response.header.resultCode, message: d.response.header.resultMsg || '알 수 없는 에러' });
+                }
+                break;
+              }
             } catch(e) { 
               console.log(`[G2B] 페이지 ${pg} 에러:`, e);
               break; 
             }
           }
           
-          console.log('=== G2B 전체 결과 ===');
           console.log('G2B 전체:', g2bAll.length, '건');
           
-          // 키워드 필터링
           const kwValues = KEYWORDS.filter(k => currentKeywords.has(k.id)).map(k => k.value);
           const flt = g2bAll.filter(i => { 
             const name = i.bidNtceNm || '';
@@ -745,18 +796,17 @@
           });
           
           console.log('G2B 키워드 매칭:', flt.length, '건');
-          if (flt.length > 0) {
-            console.log('매칭 샘플:', flt[0]?.bidNtceNm, '→', flt[0]?.matchedKeyword);
-          }
-          
           all = [...all, ...flt]; 
           g2b = flt.length;
-        } catch(e) { console.error('G2B 전체 에러:', e); }
+        } catch(e) { 
+          console.error('G2B 전체 에러:', e); 
+          errors.push({ source: 'G2B', error: 'FETCH_ERROR', message: e.message });
+        }
 
         // KEPCO
         setLoadingMsg('⚡ KEPCO 로딩...');
         try {
-          const kEnd = new Date(now), kStart = new Date(now.getTime() - 85*86400000); // 85일 (API 제한 90일)
+          const kEnd = new Date(now), kStart = new Date(now.getTime() - 85*86400000);
           const activeKw = KEYWORDS.filter(k => currentKeywords.has(k.id));
           let kepcoSuccess = false;
           
@@ -764,7 +814,6 @@
             const kw = activeKw[i];
             setLoadingMsg(`⚡ KEPCO "${kw.label}" (${i+1}/${activeKw.length})`);
             
-            // 최대 2번 재시도
             for (let retry = 0; retry < 2; retry++) {
               try {
                 const params = new URLSearchParams({ 
@@ -773,14 +822,11 @@
                   name: kw.value
                 });
                 const url = `${API.kepco}?${params}`;
-                console.log(`[KEPCO] ${kw.value} 조회 ${retry > 0 ? `(재시도 ${retry})` : ''}...`);
                 const text = await fetchApi(url);
                 
                 if (text && text.trim()) {
                   try {
                     const d = JSON.parse(text);
-                    console.log(`[KEPCO] ${kw.value} 전체 응답:`, d);
-                    console.log(`[KEPCO] ${kw.value} 응답:`, d.data?.length || 0, '건');
                     if (d.data && Array.isArray(d.data) && d.data.length > 0) {
                       d.data.forEach(item => { 
                         item.matchedKeyword = kw.value; 
@@ -791,19 +837,15 @@
                       kep += d.data.length;
                       kepcoSuccess = true;
                     } else if (d.data && d.data.length === 0) {
-                      console.log(`[KEPCO] ${kw.value} 결과 없음`);
                       kepcoSuccess = true;
                     }
-                    break; // 성공하면 재시도 루프 탈출
+                    break;
                   } catch (parseErr) { 
-                    console.log(`[KEPCO] ${kw.value} JSON 파싱 실패:`, parseErr);
+                    console.log(`[KEPCO] ${kw.value} JSON 파싱 실패`);
                   }
-                } else {
-                  console.log(`[KEPCO] ${kw.value} 빈 응답`);
                 }
               } catch(e) { 
-                console.log(`[KEPCO] ${kw.value} 호출 실패 (${retry+1}/2):`, e.message);
-                if (retry < 1) await new Promise(r => setTimeout(r, 1000)); // 재시도 전 1초 대기
+                if (retry < 1) await new Promise(r => setTimeout(r, 1000));
               }
             }
             
@@ -826,9 +868,15 @@
         setLastUpd(new Date());
         setLoading(false);
         setLoadingMsg('');
+        setApiErrors(errors);
         
-        if (uniq.length > 0) showToast(`✅ G2B ${g2b}건 + KEPCO ${kep}건!`);
-        else showToast('📭 검색 결과 없음');
+        if (errors.length > 0) {
+          showToast(`⚠️ API 오류 ${errors.length}건 (결과: ${uniq.length}건)`);
+        } else if (uniq.length > 0) {
+          showToast(`✅ G2B ${g2b}건 + KEPCO ${kep}건!`);
+        } else {
+          showToast('📭 검색 결과 없음');
+        }
       };
 
       const sendTg = async m => {
@@ -876,12 +924,12 @@
                 <div className="logo-box"><span style={{color:'white', fontWeight:'bold'}}>G2B</span></div>
                 <div>
                   <h1 style={{color:'white', fontWeight:'bold', fontSize:'18px'}}>나라장터 + KEPCO</h1>
-                  <p style={{color:'#94a3b8', fontSize:'12px'}}>안전보건 특화 v4.6 ⚡</p>
+                  <p style={{color:'#94a3b8', fontSize:'12px'}}>안전보건 특화 v4.7 ⚡</p>
                 </div>
               </div>
               <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                <span className={`badge ${items.length > 0 ? 'badge-green' : 'badge-slate'}`}>
-                  {loading ? '⏳ 로딩' : items.length > 0 ? '🟢 정상' : '⚪ 대기'}
+                <span className={`badge ${items.length > 0 ? 'badge-green' : apiErrors.length > 0 ? 'badge-red' : 'badge-slate'}`}>
+                  {loading ? '⏳ 로딩' : items.length > 0 ? '🟢 정상' : apiErrors.length > 0 ? '🔴 에러' : '⚪ 대기'}
                 </span>
                 <button className={`btn ${tgConfig.enabled ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setShowTgModal(true)}>
                   📱 알림
@@ -894,13 +942,29 @@
           </header>
 
           <main style={{maxWidth:'1280px', margin:'0 auto', padding:'24px 16px'}}>
-            {/* KEPCO 에러 안내 - 데이터가 하나도 없을 때만 표시 */}
+            {/* ★ 추가: API 에러 상세 표시 */}
+            {apiErrors.length > 0 && (
+              <div className="error-box">
+                <p style={{color:'#f87171', fontWeight:'500', marginBottom:'8px'}}>⚠️ API 연결 오류 ({apiErrors.length}건)</p>
+                {apiErrors.map((err, idx) => (
+                  <div key={idx} style={{marginBottom:'8px', padding:'8px', background:'rgba(0,0,0,0.2)', borderRadius:'8px'}}>
+                    <p style={{color:'#e2e8f0', fontSize:'13px', fontWeight:'500'}}>
+                      {err.source === 'G2B' ? '🏛️' : '⚡'} {err.source}: {err.error}
+                    </p>
+                    <p style={{color:'#94a3b8', fontSize:'12px', marginTop:'2px'}}>{err.message}</p>
+                  </div>
+                ))}
+                <p style={{color:'#94a3b8', fontSize:'12px', marginTop:'8px'}}>
+                  💡 <strong>해결 방법:</strong> data.go.kr에 로그인 → 마이페이지 → 해당 API 서비스 활용신청 확인
+                </p>
+              </div>
+            )}
+            
+            {/* KEPCO 에러 */}
             {kepcoError && items.filter(b => b.source === 'KEPCO').length === 0 && (
               <div className="info-box">
                 <p style={{color:'#22d3ee', fontWeight:'500', marginBottom:'8px'}}>⚡ KEPCO API 연결 불가</p>
-                <p style={{color:'#94a3b8', fontSize:'14px'}}>
-                  KEPCO API 서버 응답 없음. 잠시 후 다시 시도해주세요.
-                </p>
+                <p style={{color:'#94a3b8', fontSize:'14px'}}>KEPCO API 서버 응답 없음. 잠시 후 다시 시도해주세요.</p>
               </div>
             )}
 
@@ -967,11 +1031,11 @@
                   <div style={{textAlign:'center', padding:'48px 0'}}>
                     <div style={{fontSize:'32px', marginBottom:'8px'}}>📭</div>
                     <p style={{color:'#94a3b8'}}>검색 결과 없음</p>
+                    {apiErrors.length > 0 && <p style={{color:'#f87171', fontSize:'12px', marginTop:'8px'}}>API 오류가 있습니다. 위의 에러 메시지를 확인하세요.</p>}
                   </div>
                 ) : filtered.map(i => {
                   const isK = i.source === 'KEPCO';
                   const name = isK ? i.name : i.bidNtceNm;
-                  // KEPCO: 공고명에서 발전본부명 추출, 없으면 회사명
                   const kepcoPlace = isK ? (extractPlaceName(i.name) || KEPCO_COMPANIES[i.company] || i.placeName) : null;
                   const org = isK ? kepcoPlace : i.ntceInsttNm;
                   const amt = isK ? i.presumedPrice : i.presmptPrce;
@@ -1023,7 +1087,7 @@
           </main>
 
           {selected && <DetailModal item={selected} onClose={() => setSelected(null)} onOrgClick={loadOrgHistory} />}
-          {selectedOrg && <OrgHistoryModal orgName={selectedOrg} orgHistory={orgHistory} orgLoading={orgLoading} onClose={() => setSelectedOrg(null)} showToast={showToast} />}
+          {selectedOrg && <OrgHistoryModal orgName={selectedOrg} orgHistory={orgHistory} orgLoading={orgLoading} orgError={orgError} onClose={() => { setSelectedOrg(null); setOrgError(null); }} showToast={showToast} />}
           {showTgModal && <TelegramModal config={tgConfig} onSave={saveTg} onClose={() => setShowTgModal(false)} onTest={testTg} />}
           {toast && <div className="toast">{toast}</div>}
         </div>
